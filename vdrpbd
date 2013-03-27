@@ -1,0 +1,289 @@
+#!/usr/bin/perl
+#    vdrpbd - A daemon to handle ACPI power button event on VDR systems
+#    Copyright (C) 2013  Manuel Reimer <manuel.reimer@gmx.de>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+use strict;
+use Pod::PlainText;
+use Getopt::Std;
+use POSIX;
+use threads;
+use Thread::Queue;
+use Sys::Syslog qw(:standard :macros);
+use Fcntl qw(LOCK_EX LOCK_NB LOCK_UN);
+use Socket;
+use FileHandle;
+use constant { EV_KEY => 1, KEY_POWER => 116 };
+my $HAVE_DBUS = eval {require Net::DBus;};
+
+my $VERSION = '0.0.1';
+my $PROGNAME = 'vdrpbd';
+my $PIDFILE = '/var/run/vdrpbd.pid';
+my $CFGFILE = '/etc/vdrpbd.conf';
+my $FHPID;
+my $ER_COUNT = 4; # Number of keypresses and ...
+my $ER_TIME = 3;  # ... timerange in seconds for emergency reboot
+my %CONF;
+my $KEYQUEUE = Thread::Queue->new();
+
+# Main code (in main thread)
+{
+  # Prepare logging stuff
+  openlog($PROGNAME, 'pid', LOG_DAEMON);
+  $SIG{__WARN__} = sub {syslog(LOG_WARNING, @_);};
+  $SIG{__DIE__} =  sub {die(@_) if ($^S); syslog(LOG_ERR, @_); exit(1);};
+
+  # Read parameters
+  my %opts;
+  $Getopt::Std::STANDARD_HELP_VERSION = 1;
+  getopts('f', \%opts);
+
+  # Read config
+  ParseConfig();
+  if ($CONF{USE_DBUS} && !$HAVE_DBUS) {
+    die("DBus support requested but no Net::DBus module present!\n");
+  }
+
+  # Prepare environment
+  chdir('/');
+  Daemonize() unless ($opts{f});
+
+  # Register cleanup stuff
+  $SIG{INT} = \&Cleanup;
+  $SIG{TERM} = \&Cleanup;
+
+  # Connect to the power button device
+  my $device = GetButtonDevice();
+  open(my $fhdev, '<', $device) or die("Failed to open $device\n");
+
+  # Register with systemd if needed/possible
+  SystemdInhibit() if ($HAVE_DBUS && HaveSystemd());
+
+  # Run worker thread
+  threads->new(\&KeyProcessor)->detach();
+
+  # Process keypresses
+  my $struct_input_event = 'L!L!SSl';
+  my @btnhist;
+  while (read($fhdev, my $event, length(pack($struct_input_event)))) {
+    my ($tv_sec, $tv_usec, # <<-- timeval
+        $type, $code, $value) = unpack($struct_input_event, $event);
+    next unless ($type == EV_KEY && $code == KEY_POWER && $value == 0);
+
+    # Info message to syslog
+    syslog(LOG_INFO, 'Power key pressed.');
+
+    # Detect emergency reboot case
+    push(@btnhist, $tv_sec);
+    if (@btnhist == $ER_COUNT && $tv_sec - shift(@btnhist) <= $ER_TIME) {
+      syslog(LOG_INFO, 'Initiating user-requested emergency reboot!');
+      system('/sbin/shutdown', '-r', 'now');
+    }
+
+    # Add keypress to queue for worker thread to process.
+    # Don't enqueue more than 4 keypresses.
+    $KEYQUEUE->enqueue(1) if ($KEYQUEUE->pending() < 4);
+  }
+
+  # Close and cleanup
+  close($fhdev);
+  Cleanup();
+}
+
+# Worker thread. Tries to forward enqueued keypresses to VDR.
+sub KeyProcessor {
+  while ($KEYQUEUE->dequeue()) {
+    $CONF{USE_DBUS} ? SendDBus() : SendSVDRP();
+  }
+}
+
+# Cleanup routine
+sub Cleanup {
+  if ($FHPID) {
+    flock($FHPID, LOCK_UN);
+    close($FHPID);
+    unlink($PIDFILE);
+  }
+  exit(0);
+}
+
+sub VERSION_MESSAGE {
+  print "$PROGNAME $VERSION\n";
+}
+
+sub HELP_MESSAGE {
+  # Print out the built-in POD documentation in case of --help parameter
+  Pod::PlainText->new(sentence => 0)->parse_from_file($0);
+}
+
+sub ParseConfig {
+  return unless (-s $CFGFILE);
+  open(my $fh, '<', $CFGFILE) or die("Failed to open $CFGFILE\n");
+  while (my $line = <$fh>) {
+    my ($pref, $value) = $line =~ /^\s*([A-Z_]+)\s*=\s*(.+)/ or next;
+    $CONF{$pref} = $value;
+  }
+  close($fh);
+}
+
+sub Daemonize {
+  # Fork to background
+  my $pid = fork();
+  die("Forking to background failed\n") unless (defined($pid));
+
+  # Exit parent process.
+  exit(0) if ($pid);
+
+  # Close open file handles to old terminal
+  close(STDIN);
+  close(STDOUT);
+  close(STDERR);
+
+  # Write pidfile
+  sysopen($FHPID, $PIDFILE, O_CREAT|O_RDWR) or die("Opening pidfile failed\n");
+  flock($FHPID, LOCK_EX|LOCK_NB) or die("Daemon already running\n");
+  truncate($FHPID, 0);
+  print $FHPID "$$\n";
+
+  # Get process group owner
+  setsid();
+}
+
+sub HaveSystemd {
+  # We simply test whether the systemd cgroup hierarchy is mounted
+  my @a = lstat('/sys/fs/cgroup') or return 0;
+  my @b = lstat('/sys/fs/cgroup/systemd') or return 0;
+  return $a[0] != $b[0];
+}
+
+sub GetButtonDevice {
+  my $basepath = '/sys/devices/LNXSYSTM:00/LNXPWRBN:00/input';
+
+  opendir(my $dh, $basepath) or die("failed to query for input device\n");
+  my ($input) = grep(/^input/, readdir($dh)) or die("no input device found\n");
+  closedir($dh);
+  opendir($dh, "$basepath/$input") or die("failed to query for event device\n");
+  my ($event) = grep(/^event/, readdir($dh)) or die("no event device found\n");
+  closedir($dh);
+
+  return "/dev/input/$event";
+}
+
+sub SendSVDRP {
+  my $timeout = 15; # Socket timeout in seconds
+  my $port = getservbyname('svdrp', 'tcp') || 6419;
+
+  # Prepare socket and connect to VDR
+  my $sh;
+  unless (socket($sh, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
+    warn("svdrp: $!");
+    return;
+  }
+  setsockopt($sh, SOL_SOCKET, SO_SNDTIMEO, pack('L!L!', $timeout, 0) ) or
+    warn("svdrp: $!");
+  setsockopt($sh, SOL_SOCKET, SO_RCVTIMEO, pack('L!L!', $timeout, 0) ) or
+    warn("svdrp: $!");
+  unless(connect($sh, sockaddr_in($port, INADDR_LOOPBACK))) {
+    warn("svdrp: $!");
+    return;
+  }
+
+  # Send power button event
+  $sh->autoflush(1);
+  print $sh "HITK POWER\nQUIT\n"; # Send full command sequence at once!
+  my @reply = <$sh>;
+  if ($!) { # Read timed out
+    warn("svdrp: $!");
+    return;
+  }
+
+  # Process messages returned by VDR
+  foreach my $msg (@reply) {
+    $msg =~ s/\r$//;
+    warn("svdrp: $msg") if ($msg =~ /^5/);
+  }
+}
+
+# This one requires the "vdr-dbus-plugin" to be installed.
+# I don't use it and I have not tested this one. I only added it to show
+# my good will. I'll document this feature as soon as someone tested it and
+# reported that it works the way it should.
+sub SendDBus {
+  eval {
+    my $bus = Net::DBus->system();
+    my $service = $bus->get_service('de.tvdr.vdr');
+    my $object = $service->get_object('/Remote', 'de.tvdr.vdr.remote');
+    $object->HitKey('POWER');
+  } or warn("SendDBus: $@");
+}
+
+sub SystemdInhibit {
+  # HACK... Add support for UNIX FD return values to Net::DBus.
+  # 2013-01-24: Patch has been mailed to module developer
+  # 2013-02-07: First reply from developer --> Patch will be added after review
+  # 2013-03-27: Sent mail asking for an update about current status
+  unless (exists $Net::DBus::Binding::Introspector::simple_type_rev_map{ord('h')}) {
+    $Net::DBus::Binding::Introspector::simple_type_rev_map{ord('h')} = 'unixfd';
+    $Net::DBus::Binding::Introspector::simple_type_map{'unixfd'} = ord('h');
+    my $orig_get = \&Net::DBus::Binding::Iterator::get;
+    *Net::DBus::Binding::Iterator::get = sub {
+      my ($self, $type) = @_;
+      return ($type == ord('h')) ? $self->get_int32() : $orig_get->(@_);
+    };
+  }
+
+  # Try to inhibit the power key.
+  eval {
+    my $bus = Net::DBus->system();
+    my $logind = $bus->get_service('org.freedesktop.login1');
+    my $manager = $logind->get_object('/org/freedesktop/login1',
+                                      'org.freedesktop.login1.Manager');
+    $manager->Inhibit('handle-power-key', $PROGNAME, '', 'block');
+  } or warn("systemd-inhibit: $@");
+}
+
+__END__
+
+=head1 NAME
+
+vdrpbd - A daemon to handle ACPI power button event on VDR systems
+
+=head1 SYNOPSIS
+
+B<vdrpbd> S<[ B<-f> ]>
+
+=head1 DESCRIPTION
+
+B<vdrpbd> is a ACPI power button handling daemon, which has been created with a VDR-based HTPC in mind. In such setups, the power button on the front should be forwarded as event to the VDR software and no hard shutdown should be triggered. This is where B<vdrpbd> comes in. It listens on the relevant input device and forwards button presses to the VDR process.
+
+The usual downside of this is, that a hanging VDR process makes the power button useless for shutting down the system cleanly. You either have to do a shutdown via remote access or, if available, via terminal on your TV. To address this issue, B<vdrpbd> has a "emergency reboot" feature. If you press the power button four times within three seconds, then the daemon triggers a system reboot to bring your system back to a working state in a clean, easy and fast way.
+
+=head2 Command Switches
+
+Switches include:
+
+=over 5
+
+=item B<-f>
+
+Run B<vdrpbd> in the foreground. Default is to run in the background as "daemon".
+
+=item B<--help>
+
+display this help and exit
+
+=item B<--version>
+
+output version information and exit
