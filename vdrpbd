@@ -224,10 +224,7 @@ sub SendSVDRP {
   }
 }
 
-# This one requires the "vdr-dbus-plugin" to be installed.
-# I don't use it and I have not tested this one. I only added it to show
-# my good will. I'll document this feature as soon as someone tested it and
-# reported that it works the way it should.
+# This one requires the "dbus2vdr-plugin" to be installed.
 sub SendDBus {
   eval {
     my $bus = Net::DBus->system();
@@ -296,3 +293,9 @@ display this help and exit
 =item B<--version>
 
 output version information and exit
+
+=back
+
+=head1 SEE ALSO
+
+vdrpbd.conf(5)

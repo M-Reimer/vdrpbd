@@ -1,0 +1,36 @@
+=head1 NAME
+
+vdrpbd.conf - Configuration file for vdrpbd
+
+=head1 SYNOPSIS
+
+B<vdrpbd.conf>
+
+=head1 DESCRIPTION
+
+The file B<vdrpbd.conf> is an optional configuration file to customize some settings of vdrpbd.
+
+=head1 VARIABLES
+
+The following variables can be set in vdrpbd.conf:
+
+ ER_COUNT=4
+ ER_TIME=3
+
+=over 5
+
+These two variables customize the key sequence that has to be pressed to trigger an emergency reboot. The variable "ER_TIME" sets the time range in seconds, in which you have to press the power button "ER_COUNT" times.
+
+=back
+
+ USE_DBUS=0
+
+=over 5
+
+If you set this to 1, then the power button event is sent to VDR using "dbus" and not using SVDRP. This requires the dbus2vdr plugin to be loaded in VDR and the "Net::DBus" Perl module has to exist on your system.
+
+=back
+
+=head1 SEE ALSO
+
+vdrpbd(1)
