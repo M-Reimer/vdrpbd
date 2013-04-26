@@ -231,9 +231,10 @@ sub SendDBus {
 
 sub SystemdInhibit {
   # HACK... Add support for UNIX FD return values to Net::DBus.
-  # 2013-01-24: Patch has been mailed to module developer
+  # 2013-01-24: Mailed patch to module developer
   # 2013-02-07: First reply from developer --> Patch will be added after review
   # 2013-03-27: Sent mail asking for an update about current status
+  # 2013-04-05: https://gitorious.org/net-dbus/net-dbus/commit/5bf227d
   unless (exists $Net::DBus::Binding::Introspector::simple_type_rev_map{ord('h')}) {
     $Net::DBus::Binding::Introspector::simple_type_rev_map{ord('h')} = 'unixfd';
     $Net::DBus::Binding::Introspector::simple_type_map{'unixfd'} = ord('h');

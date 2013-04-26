@@ -14,3 +14,10 @@ Features:
 - Systemd integration. If systemd is detected, then vdrpbd tries to register
   itself as "power button inhibitor". The module "Net::DBus" is required for
   this to work.
+  Note that this requires systemd version 201 or later and vdrpbd has to be
+  started by systemd (systemctl start vdrpbd):
+  http://lists.freedesktop.org/archives/systemd-devel/2013-April/010171.html
+  For older systemd versions you have to add the following line to your
+  /etc/systemd/logind.conf:
+
+  HandlePowerKey=ignore
