@@ -33,9 +33,10 @@ my $PROGNAME = 'vdrpbd';
 my $PIDFILE = '/var/run/vdrpbd.pid';
 my $CFGFILE = '/etc/vdrpbd.conf';
 my $FHPID;
-my $ER_COUNT = 4; # Number of keypresses and ...
-my $ER_TIME = 3;  # ... timerange in seconds for emergency reboot
-my %CONF;
+my %CONF = (
+  ER_COUNT => 4, # Number of keypresses and ...
+  ER_TIME => 3   # ... timerange in seconds for emergency reboot
+);
 my $KEYQUEUE = Thread::Queue->new();
 
 # Main code (in main thread)
@@ -54,6 +55,12 @@ my $KEYQUEUE = Thread::Queue->new();
   ParseConfig();
   if ($CONF{USE_DBUS} && !$HAVE_DBUS) {
     die("DBus support requested but no Net::DBus module present!\n");
+  }
+  if ($CONF{ER_COUNT} !~ /^[0-9]+$/ || $CONF{ER_COUNT} < 2) {
+    die("Invalid value for ER_COUNT in $CFGFILE!\n");
+  }
+  if ($CONF{ER_TIME} !~ /^[0-9]+$/ || $CONF{ER_TIME} < 1) {
+    die("Invalid value for ER_TIME in $CFGFILE!\n");
   }
 
   # Prepare environment
@@ -87,7 +94,8 @@ my $KEYQUEUE = Thread::Queue->new();
 
     # Detect emergency reboot case
     push(@btnhist, $tv_sec);
-    if (@btnhist == $ER_COUNT && $tv_sec - shift(@btnhist) <= $ER_TIME) {
+    if (@btnhist == $CONF{ER_COUNT} &&
+        $tv_sec - shift(@btnhist) <= $CONF{ER_TIME}) {
       syslog(LOG_INFO, 'Initiating user-requested emergency reboot!');
       system('/sbin/shutdown', '-r', 'now');
     }
