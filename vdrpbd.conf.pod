@@ -8,7 +8,7 @@ B<vdrpbd.conf>
 
 =head1 DESCRIPTION
 
-The file B<vdrpbd.conf> is an optional configuration file to customize some settings of vdrpbd.
+The file B<vdrpbd.conf> is an optional configuration file to customize some settings of vdrpbd. It is normally located in the /etc directory.
 
 =head1 VARIABLES
 
