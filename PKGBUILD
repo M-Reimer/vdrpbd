@@ -10,5 +10,5 @@ backup=('etc/vdrpbd.conf')
 
 package() {
   cd "$startdir"
-  make DESTDIR=$pkgdir PREFIX=/usr install
+  make DESTDIR=$pkgdir PREFIX=/usr BINDIR=/usr/bin install
 }
