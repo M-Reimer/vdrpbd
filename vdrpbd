@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #    vdrpbd - A daemon to handle ACPI power button event on VDR systems
-#    Copyright (C) 2013  Manuel Reimer <manuel.reimer@gmx.de>
+#    Copyright (C) 2015  Manuel Reimer <manuel.reimer@gmx.de>
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@ use Sys::Syslog qw(:standard :macros);
 use Fcntl qw(LOCK_EX LOCK_NB LOCK_UN);
 use Socket;
 use FileHandle;
-use constant { EV_KEY => 1, KEY_POWER => 116 };
+use constant {EVIOCGRAB => 0x40044590, EV_KEY => 1, KEY_POWER => 116};
 my $HAVE_DBUS = eval {require Net::DBus;};
 
 my $VERSION = '0.1.0';
@@ -74,6 +74,9 @@ my $KEYQUEUE = Thread::Queue->new();
   # Connect to the power button device
   my $device = GetButtonDevice();
   open(my $fhdev, '<', $device) or die("Failed to open $device\n");
+
+  # Get exclusive access to power button device (Disconnect X server)
+  ioctl($fhdev, EVIOCGRAB, 1) or warn("Failed to get exclusive access!\n");
 
   # Register with systemd if needed/possible
   SystemdInhibit() if ($HAVE_DBUS && HaveSystemd());
@@ -216,6 +219,7 @@ sub SendSVDRP {
     warn("svdrp: $!");
     return;
   }
+  close($sh);
 
   # Process messages returned by VDR
   foreach my $msg (@reply) {
