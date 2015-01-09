@@ -9,3 +9,9 @@ vdrpbd Revision History
 
 - Added template for /etc/vdrpbd.conf
 - Time range and number of keypresses for emergency reboot now configurable
+
+2015-01-09: Version 1.0.0
+
+- vdrpbd now tries to get exclusive access to the power button device.
+  This fixes a problem with softhddevice which forwards all keyboard events to
+  VDR. This made it impossible to cancel a shutdown by pressing "power" again.
