@@ -23,11 +23,11 @@ These two variables customize the key sequence that has to be pressed to trigger
 
 =back
 
- USE_DBUS=0
+ TARGET=svdrp
 
 =over 5
 
-If you set this to 1, then the power button event is sent to VDR using "dbus" and not using SVDRP. This requires the dbus2vdr plugin to be loaded in VDR and the "Net::DBus" Perl module has to exist on your system.
+This allows you to define the target for the power button event. Default is B<svdrp> for sending to a running VDR daemon using the SVDRP protocol. Set to B<dbus> to send to VDR via dbus. This requires the dbus2vdr plugin to be loaded in VDR and the "Net::DBus" Perl module has to exist on your system. Set to B<kodi> to send to a running Kodi process via TCP.
 
 =back
 

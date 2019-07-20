@@ -23,7 +23,7 @@ use threads;
 use Thread::Queue;
 use Sys::Syslog qw(:standard :macros);
 use Fcntl qw(LOCK_EX LOCK_NB LOCK_UN);
-use Socket;
+use IO::Socket::IP;
 use FileHandle;
 use constant {EVIOCGRAB => 0x40044590, EV_KEY => 1, KEY_POWER => 116};
 my $HAVE_DBUS = eval {require Net::DBus;};
@@ -35,7 +35,8 @@ my $CFGFILE = '/etc/vdrpbd.conf';
 my $FHPID;
 my %CONF = (
   ER_COUNT => 4, # Number of keypresses and ...
-  ER_TIME => 3   # ... timerange in seconds for emergency reboot
+  ER_TIME => 3,  # ... timerange in seconds for emergency reboot
+  TARGET => 'svdrp' # Target to send the power button event to
 );
 my $KEYQUEUE = Thread::Queue->new();
 
@@ -53,7 +54,11 @@ my $KEYQUEUE = Thread::Queue->new();
 
   # Read config
   ParseConfig();
-  if ($CONF{USE_DBUS} && !$HAVE_DBUS) {
+  $CONF{TARGET} = 'dbus' if ($CONF{USE_DBUS}); # Legacy "USE_DBUS" option
+  if ($CONF{TARGET} !~ /^(svdrp|dbus|kodi)$/) {
+    die("Invalid value for TARGET in $CFGFILE!\n");
+  }
+  if ($CONF{TARGET} eq 'dbus' && !$HAVE_DBUS) {
     die("DBus support requested but no Net::DBus module present!\n");
   }
   if ($CONF{ER_COUNT} !~ /^[0-9]+$/ || $CONF{ER_COUNT} < 2) {
@@ -113,10 +118,18 @@ my $KEYQUEUE = Thread::Queue->new();
   Cleanup();
 }
 
-# Worker thread. Tries to forward enqueued keypresses to VDR.
+# Worker thread. Tries to forward enqueued keypresses to VDR/Kodi.
 sub KeyProcessor {
   while ($KEYQUEUE->dequeue()) {
-    $CONF{USE_DBUS} ? SendDBus() : SendSVDRP();
+    if ($CONF{TARGET} eq 'dbus') {
+      SendDBus();
+    }
+    elsif ($CONF{TARGET} eq 'kodi') {
+      SendKodi();
+    }
+    else {
+      SendSVDRP();
+    }
   }
 }
 
@@ -192,27 +205,38 @@ sub GetButtonDevice {
   return "/dev/input/$event";
 }
 
-sub SendSVDRP {
+# Establishes local TCP connection.
+# Parameters:
+#   aPort: Port to connect to
+# Return values:
+#   Connected socket on success
+#   undef on error
+sub ConnectTCP {
   my $timeout = 15; # Socket timeout in seconds
-  my $port = getservbyname('svdrp', 'tcp') || 6419;
+  my ($aPort) = @_;
 
-  # Prepare socket and connect to VDR
-  my $sh;
-  unless (socket($sh, PF_INET, SOCK_STREAM, getprotobyname('tcp'))) {
-    warn("svdrp: $!");
+  my $sock = IO::Socket::IP->new(
+    PeerHost => 'localhost',
+    PeerPort => $aPort,
+    Type     => SOCK_STREAM,
+    Timeout  => $timeout
+  );
+
+  # Connection failed
+  if (!$sock) {
+    warn("ConnectTCP: $!");
     return;
   }
-  setsockopt($sh, SOL_SOCKET, SO_SNDTIMEO, pack('L!L!', $timeout, 0) ) or
-    warn("svdrp: $!");
-  setsockopt($sh, SOL_SOCKET, SO_RCVTIMEO, pack('L!L!', $timeout, 0) ) or
-    warn("svdrp: $!");
-  unless(connect($sh, sockaddr_in($port, INADDR_LOOPBACK))) {
-    warn("svdrp: $!");
-    return;
-  }
+
+  $sock->autoflush(1);
+  return $sock;
+}
+
+sub SendSVDRP {
+  my $port = getservbyname('svdrp', 'tcp') || 6419;
+  my $sh = ConnectTCP($port) or return;
 
   # Send power button event
-  $sh->autoflush(1);
   print $sh "HITK POWER\nQUIT\n"; # Send full command sequence at once!
   my @reply = <$sh>;
   if ($!) { # Read timed out
@@ -226,6 +250,12 @@ sub SendSVDRP {
     $msg =~ s/\r$//;
     warn("svdrp: $msg") if ($msg =~ /^5/);
   }
+}
+
+sub SendKodi {
+  my $sock = ConnectTCP(9090);
+  print $sock '{"jsonrpc":"2.0","method":"System.Shutdown","id":1}';
+  # TODO: Do some "error tracking" here (read back feedback from Kodi?)
 }
 
 # This one requires the "dbus2vdr-plugin" to be installed.
@@ -279,6 +309,10 @@ B<vdrpbd> S<[ B<-f> ]>
 B<vdrpbd> is a ACPI power button handling daemon, which has been created with a VDR-based HTPC in mind. In such setups, the power button on the front should be forwarded as event to the VDR software and no hard shutdown should be triggered. This is where B<vdrpbd> comes in. It listens on the relevant input device and forwards button presses to the VDR process.
 
 The usual downside of this is, that a hanging VDR process makes the power button useless for shutting down the system cleanly. You either have to do a shutdown via remote access or, if available, via terminal on your TV. To address this issue, B<vdrpbd> has a "emergency reboot" feature. If you press the power button four times within three seconds, then the daemon triggers a system reboot to bring your system back to a working state in a clean, easy and fast way.
+
+=head1 KODI SUPPORT
+
+B<vdrpbd> supports Kodi as frontend for Linux HTPC systems. This doesn't require you to use VDR as PVR backend or any PVR backend at all. To have the power button sent to Kodi, just set B<TARGET> in vdrpbd.conf to B<kodi>.
 
 =head2 Command Switches
 
