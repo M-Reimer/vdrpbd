@@ -193,8 +193,13 @@ sub HaveSystemd {
 }
 
 sub GetButtonDevice {
-  my $basepath = '/sys/devices/LNXSYSTM:00/LNXPWRBN:00/input';
+  # Power buttons to check for in order of falling priority
+  my @devicepaths = (
+    '/sys/devices/LNXSYSTM:00/LNXPWRBN:00/input',
+    '/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0C:00/input'
+  );
 
+  my ($basepath) = grep {-d $_} @devicepaths or die("No power button found\n");
   opendir(my $dh, $basepath) or die("failed to query for input device\n");
   my ($input) = grep(/^input/, readdir($dh)) or die("no input device found\n");
   closedir($dh);
