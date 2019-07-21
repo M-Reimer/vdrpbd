@@ -80,8 +80,14 @@ my $KEYQUEUE = Thread::Queue->new();
   my $device = GetButtonDevice();
   open(my $fhdev, '<', $device) or die("Failed to open $device\n");
 
-  # Get exclusive access to power button device (Disconnect X server)
-  ioctl($fhdev, EVIOCGRAB, 1) or warn("Failed to get exclusive access!\n");
+  # VDR reacts with "Press any key to cancel shutdown" if we send our
+  # shutdown request. If we let the KEY_POWER through to the X server, then
+  # this *is* a key press and depending on timing it may cancel shutdown.
+  # "Kodi mode" is just to not block the key from reaching the X server.
+  # Kodi properly handles KEY_POWER on its own.
+  if ($CONF{TARGET} ne 'kodi') {
+    ioctl($fhdev, EVIOCGRAB, 1) or warn("Failed to get exclusive access!\n");
+  }
 
   # Register with systemd if needed/possible
   SystemdInhibit() if ($HAVE_DBUS && HaveSystemd());
@@ -124,10 +130,7 @@ sub KeyProcessor {
     if ($CONF{TARGET} eq 'dbus') {
       SendDBus();
     }
-    elsif ($CONF{TARGET} eq 'kodi') {
-      SendKodi();
-    }
-    else {
+    elsif ($CONF{TARGET} eq 'svdrp') {
       SendSVDRP();
     }
   }
@@ -255,12 +258,6 @@ sub SendSVDRP {
     $msg =~ s/\r$//;
     warn("svdrp: $msg") if ($msg =~ /^5/);
   }
-}
-
-sub SendKodi {
-  my $sock = ConnectTCP(9090);
-  print $sock '{"jsonrpc":"2.0","method":"System.Shutdown","id":1}';
-  # TODO: Do some "error tracking" here (read back feedback from Kodi?)
 }
 
 # This one requires the "dbus2vdr-plugin" to be installed.
