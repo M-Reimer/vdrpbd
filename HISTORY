@@ -15,3 +15,8 @@ vdrpbd Revision History
 - vdrpbd now tries to get exclusive access to the power button device.
   This fixes a problem with softhddevice which forwards all keyboard events to
   VDR. This made it impossible to cancel a shutdown by pressing "power" again.
+
+2019-07-21: Version 2.0.0
+
+- Kodi support
+- Second candidate for power button device path added
