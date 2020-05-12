@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 #    vdrpbd - A daemon to handle ACPI power button event on VDR systems
-#    Copyright (C) 2019  Manuel Reimer <manuel.reimer@gmx.de>
+#    Copyright (C) 2020  Manuel Reimer <manuel.reimer@gmx.de>
 #
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -76,17 +76,26 @@ my $KEYQUEUE = Thread::Queue->new();
   $SIG{INT} = \&Cleanup;
   $SIG{TERM} = \&Cleanup;
 
-  # Connect to the power button device
-  my $device = GetButtonDevice();
-  open(my $fhdev, '<', $device) or die("Failed to open $device\n");
+  # Connect to the power button devices
+  # https://www.cs.ait.ac.th/~on/O/oreilly/perl/cookbook/ch07_14.htm
+  # We remember all file handles and create a bitmask for "select" from them
+  my @devices = GetButtonDevices();
+  my @fhdevs;
+  my $rin = '';
+  foreach my $device (@devices) {
+    open(my $fhdev, '<', $device) or die("Failed to open $device\n");
+    vec($rin, fileno($fhdev), 1) = 1;
+    push(@fhdevs, $fhdev);
 
-  # VDR reacts with "Press any key to cancel shutdown" if we send our
-  # shutdown request. If we let the KEY_POWER through to the X server, then
-  # this *is* a key press and depending on timing it may cancel shutdown.
-  # "Kodi mode" is just to not block the key from reaching the X server.
-  # Kodi properly handles KEY_POWER on its own.
-  if ($CONF{TARGET} ne 'kodi') {
-    ioctl($fhdev, EVIOCGRAB, 1) or warn("Failed to get exclusive access!\n");
+
+    # VDR reacts with "Press any key to cancel shutdown" if we send our
+    # shutdown request. If we let the KEY_POWER through to the X server, then
+    # this *is* a key press and depending on timing it may cancel shutdown.
+    # "Kodi mode" is just to not block the key from reaching the X server.
+    # Kodi properly handles KEY_POWER on its own.
+    if ($CONF{TARGET} ne 'kodi') {
+      ioctl($fhdev, EVIOCGRAB, 1) or warn("Failed to get exclusive access!\n");
+    }
   }
 
   # Register with systemd if needed/possible
@@ -98,7 +107,18 @@ my $KEYQUEUE = Thread::Queue->new();
   # Process keypresses
   my $struct_input_event = 'L!L!SSl';
   my @btnhist;
-  while (read($fhdev, my $event, length(pack($struct_input_event)))) {
+  # Wait until one of the devices gets ready for read
+  while (select(my $rout = $rin, undef, undef, undef)) {
+    # Read one event from the first "readable" device we find
+    my $event = 0;
+    foreach my $fhdev (@fhdevs) {
+      if (vec($rout, fileno($fhdev), 1)) {
+        sysread($fhdev, $event, length(pack($struct_input_event)));
+        last;
+      }
+    }
+    next unless($event);
+
     my ($tv_sec, $tv_usec, # <<-- timeval
         $type, $code, $value) = unpack($struct_input_event, $event);
     next unless ($type == EV_KEY && $code == KEY_POWER && $value == 0);
@@ -120,7 +140,9 @@ my $KEYQUEUE = Thread::Queue->new();
   }
 
   # Close and cleanup
-  close($fhdev);
+  foreach my $fhdev (@fhdevs) {
+    close($fhdev);
+  }
   Cleanup();
 }
 
@@ -195,22 +217,30 @@ sub HaveSystemd {
   return $a[0] != $b[0];
 }
 
-sub GetButtonDevice {
-  # Power buttons to check for in order of falling priority
+# Returns a list of possible "power button devices" found on this system
+sub GetButtonDevices {
+  # Power buttons to check for
   my @devicepaths = (
+    '/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0E:00/input',
     '/sys/devices/LNXSYSTM:00/LNXPWRBN:00/input',
     '/sys/devices/LNXSYSTM:00/LNXSYBUS:00/PNP0C0C:00/input'
   );
 
-  my ($basepath) = grep {-d $_} @devicepaths or die("No power button found\n");
-  opendir(my $dh, $basepath) or die("failed to query for input device\n");
-  my ($input) = grep(/^input/, readdir($dh)) or die("no input device found\n");
-  closedir($dh);
-  opendir($dh, "$basepath/$input") or die("failed to query for event device\n");
-  my ($event) = grep(/^event/, readdir($dh)) or die("no event device found\n");
-  closedir($dh);
+  my @basepaths = grep {-d $_} @devicepaths or die("No power button found\n");
+  my @result;
+  foreach my $basepath (@basepaths) {
+    opendir(my $dh, $basepath) or next;
+    my ($input) = grep(/^input/, readdir($dh)) or next;
+    closedir($dh);
+    opendir($dh, "$basepath/$input") or next;
+    my ($event) = grep(/^event/, readdir($dh)) or next;
+    closedir($dh);
+    push(@result, "/dev/input/$event");
+  }
 
-  return "/dev/input/$event";
+  die("No power button found\n") if (@result == 0);
+
+  return @result;
 }
 
 # Establishes local TCP connection.
