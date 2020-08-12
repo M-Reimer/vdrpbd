@@ -16,7 +16,7 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use strict;
-use Pod::PlainText;
+use Pod::Simple::Text;
 use Getopt::Std;
 use POSIX;
 use threads;
@@ -174,7 +174,7 @@ sub VERSION_MESSAGE {
 
 sub HELP_MESSAGE {
   # Print out the built-in POD documentation in case of --help parameter
-  Pod::PlainText->new(sentence => 0)->parse_from_file($0);
+  Pod::Simple::Text->filter($0);
 }
 
 sub ParseConfig {
